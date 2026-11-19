@@ -76,8 +76,8 @@ def descargar_video_tramo(
     cmd = [
         "yt-dlp",
         "--no-playlist",
-        "--concurrent-fragments", "8",
-        "-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best",
+        "--concurrent-fragments", "16",
+        "-f", "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]/best",
         "--merge-output-format", "mp4",
         "-o", ruta_salida,
     ]
@@ -85,7 +85,7 @@ def descargar_video_tramo(
     if usar_tramo and min_fin > min_inicio:
         inicio_str = segundos_a_hhmmss(min_inicio * 60)
         fin_str = segundos_a_hhmmss(min_fin * 60)
-        cmd.extend(["--download-sections", f"*{inicio_str}-{fin_str}", "--force-keyframes-at-cuts"])
+        cmd.extend(["--download-sections", f"*{inicio_str}-{fin_str}"])
 
     if cookies_txt and cookies_txt.strip():
         ruta_cookies = os.path.join(carpeta_trabajo, "cookies.txt")
@@ -94,7 +94,7 @@ def descargar_video_tramo(
         cmd.extend(["--cookies", ruta_cookies])
 
     cmd.append(url.strip())
-    proceso = subprocess.run(cmd, capture_output=True, text=True)
+    proceso = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     if proceso.returncode != 0 or not os.path.exists(ruta_salida):
         raise RuntimeError(f"Error al descargar el video:\n{proceso.stderr[-800:]}")
     return ruta_salida
