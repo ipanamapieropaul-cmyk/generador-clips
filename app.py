@@ -2,6 +2,7 @@ import streamlit as st
 import yt_dlp
 import json
 import os
+import gc
 import glob
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -40,7 +41,7 @@ with st.sidebar:
     st.divider()
     st.subheader("⏱️ Directos largos (Kick / Twitch)")
     st.info(
-        "Si pegas un directo de **2 a 8 horas**, activa la opción **'Analizar solo un tramo por minutos'** para procesar bloques de 45–60 minutos en menos de 2 minutos."
+        "En directos de **2 a 8 horas**, activa **'Analizar solo un tramo por minutos'** (ej. min 60 al 120) para evitar llenar la memoria del servidor y obtener clips en 1 minuto."
     )
     st.subheader("🎯 ¿Qué formato elegir?")
     st.info(
@@ -54,9 +55,9 @@ st.caption("Extrae automáticamente los mejores momentos en formato vertical (9:
 
 col1, col2, col3 = st.columns(3)
 with col1:
-    st.info("**Paso 1: Elige tu fuente**\n\nPega un enlace de YouTube, Twitch o Kick, o sube un MP4.")
+    st.info("**Paso 1: Elige tu fuente**\n\nPega un enlace de Kick, Twitch o YouTube, o sube un MP4.")
 with col2:
-    st.info("**Paso 2: Encuadre y tramo**\n\nElige zoom o fondo borroso (y filtra minutos si es un directo largo).")
+    st.info("**Paso 2: Encuadre y tramo**\n\nElige zoom o fondo borroso (y filtra minutos si es un stream largo).")
 with col3:
     st.info("**Paso 3: Descarga y sube**\n\nRevisa el puntaje viral de cada clip y descárgalo en MP4.")
 
@@ -64,7 +65,7 @@ st.divider()
 
 api_key = st.secrets["GEMINI_API_KEY"]
 
-tab_enlace, tab_archivo = st.tabs(["🔗 Pegar Enlace (YouTube / Twitch / Kick)", "📁 Subir Video MP4 Directo"])
+tab_enlace, tab_archivo = st.tabs(["🔗 Pegar Enlace (Kick / Twitch / YouTube)", "📁 Subir Video MP4 Directo"])
 
 url = ""
 archivo_subido = None
@@ -72,7 +73,7 @@ archivo_subido = None
 with tab_enlace:
     url = st.text_input(
         "Pega aquí el enlace del video o directo:",
-        placeholder="Ejemplo: https://kick.com/... o https://www.youtube.com/watch?v=..."
+        placeholder="Ejemplo: https://kick.com/... o https://www.twitch.tv/videos/..."
     )
 
 with tab_archivo:
@@ -82,15 +83,15 @@ with tab_archivo:
     )
 
 # Selector de tramo para directos largos
-usar_tramo = st.checkbox("⏱️ Analizar solo un tramo específico por minutos (Recomendado para directos de +1 hora)")
+usar_tramo = st.checkbox("⏱️ Analizar solo un tramo específico por minutos (Obligatorio para directos de +1 hora en la web)")
 min_inicio = 0
-min_fin = 60
+min_fin = 45
 if usar_tramo:
     col_t1, col_t2 = st.columns(2)
     with col_t1:
         min_inicio = st.number_input("Minuto de inicio:", min_value=0, max_value=1440, value=0, step=5)
     with col_t2:
-        min_fin = st.number_input("Minuto de fin:", min_value=1, max_value=1440, value=60, step=5)
+        min_fin = st.number_input("Minuto de fin:", min_value=1, max_value=1440, value=45, step=5)
 
 formato_video = st.radio(
     "📐 Elige el estilo de encuadre vertical:",
@@ -104,7 +105,7 @@ formato_video = st.radio(
 OPCIONES_YTDLP_BASE = {
     'nocheckcertificate': True,
     'geo_bypass': True,
-    'concurrent_fragment_downloads': 8,
+    'concurrent_fragment_downloads': 4,
     'quiet': True
 }
 if tiene_cookies:
@@ -170,7 +171,7 @@ def procesar_clip_tarea(datos):
         temp_fragmento = f"fragmento_{i}.mp4"
         ydl_clip_opts = {
             **OPCIONES_YTDLP_BASE,
-            'format': 'best[height<=1080][ext=mp4]/best[height<=1080]/best',
+            'format': 'best[height<=720][ext=mp4]/best[height<=720]/best',
             'outtmpl': temp_fragmento,
             'download_ranges': yt_dlp.utils.download_range_func(None, [(inicio, fin)]),
         }
@@ -179,6 +180,10 @@ def procesar_clip_tarea(datos):
 
         if os.path.exists(temp_fragmento):
             renderizar_clip_ffmpeg(temp_fragmento, ruta_final, usar_fondo_borroso)
+            try:
+                os.remove(temp_fragmento)
+            except:
+                pass
             return (i, clip, ruta_final)
     return None
 
@@ -195,8 +200,8 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
         es_archivo_local = archivo_subido is not None
         desfase_segundos = float(min_inicio * 60) if usar_tramo else 0.0
 
-        # Paso 1: Obtener audio (completo o solo el tramo elegido)
-        barra.progress(15, text="📥 Paso 1/4: Descargando y preparando pista de audio...")
+        # Paso 1: Obtener pista ligera para transcribir (evita bajar 20 GB en Kick)
+        barra.progress(15, text="📥 Paso 1/4: Descargando pista ligera para analizar audio...")
         if es_archivo_local:
             ruta_video_local = "video_local_temp.mp4"
             with open(ruta_video_local, "wb") as f:
@@ -211,7 +216,7 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
         else:
             ydl_opts = {
                 **OPCIONES_YTDLP_BASE,
-                'format': 'bestaudio/best',
+                'format': 'worstaudio/worst[ext=mp4]/worst',
                 'outtmpl': 'audio_temp.%(ext)s',
             }
             if usar_tramo:
@@ -224,10 +229,10 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
                 fuente_clips = url
             except Exception as e:
                 barra.empty()
-                st.error(f"⚠️ No se pudo descargar el enlace ({str(e)[:140]}). Si las cookies expiraron, renuévalas o usa la pestaña 'Subir Video MP4 Directo'.")
+                st.error(f"⚠️ No se pudo descargar el enlace ({str(e)[:140]}). Si es un stream muy largo, activa la casilla de tramo por minutos.")
                 st.stop()
 
-        # Paso 2: Transcribir
+        # Paso 2: Transcribir y liberar RAM al terminar
         barra.progress(40, text="🎙️ Paso 2/4: Transcribiendo voz a texto con IA...")
         try:
             model = WhisperModel("base", device="cuda", compute_type="float16")
@@ -235,11 +240,12 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
             model = WhisperModel("tiny", device="cpu", compute_type="int8")
 
         segments, _ = model.transcribe(archivo_audio, beam_size=1, vad_filter=True)
-        # Sumamos el desfase_segundos para conservar el tiempo real dentro del directo original
         lineas_transcripcion = [
             f"[{(s.start + desfase_segundos):.1f}s - {(s.end + desfase_segundos):.1f}s]: {s.text}"
             for s in segments
         ]
+        del model
+        gc.collect()
 
         # Paso 3: Analizar con Gemini
         barra.progress(65, text="🧠 Paso 3/4: Detectando los mejores ganchos virales...")
@@ -277,12 +283,12 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
 
         todos_los_clips = sorted(todos_los_clips, key=lambda x: x.get('puntaje', 0), reverse=True)[:4]
 
-        # Paso 4: Renderizar clips
+        # Paso 4: Renderizar clips (2 hilos para cuidar la RAM en la nube)
         barra.progress(85, text="✂️ Paso 4/4: Renderizando tus clips con el encuadre elegido...")
         os.makedirs("clips_videos", exist_ok=True)
         tareas = [(i, clip, fuente_clips, es_archivo_local, "clips_videos", usar_fondo_borroso) for i, clip in enumerate(todos_los_clips)]
         
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=2) as executor:
             resultados = list(executor.map(procesar_clip_tarea, tareas))
 
         barra.progress(100, text="✅ ¡Proceso completado!")
