@@ -32,8 +32,8 @@ with st.sidebar:
     st.header("💡 Guía Rápida")
     st.markdown("""
     **¿Cómo funciona esta herramienta?**
-    1. **Extrae una pista de audio ligera** del video o tramo elegido.
-    2. **La IA escucha el audio directamente** sin saturar el servidor.
+    1. **Extrae una pista de audio ultraligera** del video o tramo.
+    2. **La IA escucha el audio directamente** en la nube.
     3. **Detecta los momentos más virales** con tiempos exactos.
     4. **Renderiza en vertical (9:16)** listo para TikTok o Reels.
     """)
@@ -44,7 +44,7 @@ with st.sidebar:
     )
     st.subheader("🎯 ¿Qué formato elegir?")
     st.info(
-        "**• Zoom centrado (9:16):** Ideal para podcasts, charlas o reacciones.\n\n"
+        "**• Zoom centrado (9:16):** Ideal para podcasts, charlas o reacciones (el más rápido).\n\n"
         "**• Fondo borroso:** Ideal para gameplays, fútbol o streams completos."
     )
 
@@ -62,7 +62,7 @@ with col3:
 
 st.divider()
 
-api_key = st.secrets["GEMINI_API_KEY"]
+api_key = st.secrets["GEMINI_API_KEY"].strip()
 
 tab_enlace, tab_archivo = st.tabs(["🔗 Pegar Enlace (Kick / Twitch / YouTube)", "📁 Subir Video MP4 Directo"])
 
@@ -81,7 +81,6 @@ with tab_archivo:
         type=["mp4", "mov", "mkv"]
     )
 
-# Selector de tramo para directos largos
 usar_tramo = st.checkbox("⏱️ Analizar solo un tramo específico por minutos (Recomendado para directos de +1 hora)")
 min_inicio = 0
 min_fin = 35
@@ -104,7 +103,7 @@ formato_video = st.radio(
 OPCIONES_YTDLP_BASE = {
     'nocheckcertificate': True,
     'geo_bypass': True,
-    'concurrent_fragment_downloads': 4,
+    'concurrent_fragment_downloads': 8,
     'quiet': True
 }
 if tiene_cookies:
@@ -128,21 +127,22 @@ def formatear_tiempo(segundos_totales):
 
 def renderizar_clip_ffmpeg(entrada_mp4, ruta_final, usar_fondo_borroso, inicio=None, fin=None):
     if usar_fondo_borroso:
+        # Desenfoque en baja resolución y escalado rápido a 720x1280 (3x más rápido en CPU)
         filtro_ffmpeg = [
             "-filter_complex",
-            "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=20:5[bg];"
-            "[0:v]scale=1080:-2[fg];"
+            "[0:v]scale=180:320:force_original_aspect_ratio=increase,crop=180:320,boxblur=8:2,scale=720:1280[bg];"
+            "[0:v]scale=720:-2[fg];"
             "[bg][fg]overlay=(W-w)/2:(H-h)/2"
         ]
     else:
-        filtro_ffmpeg = ["-vf", "crop=ih*(9/16):ih:(iw-ih*(9/16))/2:0"]
+        filtro_ffmpeg = ["-vf", "crop=ih*(9/16):ih:(iw-ih*(9/16))/2:0,scale=720:1280"]
 
     recorte_tiempo = ["-ss", str(inicio), "-to", str(fin)] if (inicio is not None and fin is not None) else []
 
     comando_gpu = [
         ffmpeg_bin, "-y", *recorte_tiempo, "-i", entrada_mp4,
         *filtro_ffmpeg,
-        "-c:v", "h264_nvenc", "-preset", "p1", "-cq", "23",
+        "-c:v", "h264_nvenc", "-preset", "p1", "-cq", "24",
         "-c:a", "aac", "-b:a", "128k",
         ruta_final
     ]
@@ -151,7 +151,8 @@ def renderizar_clip_ffmpeg(entrada_mp4, ruta_final, usar_fondo_borroso, inicio=N
         comando_cpu = [
             ffmpeg_bin, "-y", *recorte_tiempo, "-i", entrada_mp4,
             *filtro_ffmpeg,
-            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24",
+            "-threads", "2",
             "-c:a", "aac", "-b:a", "128k",
             ruta_final
         ]
@@ -199,8 +200,8 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
         es_archivo_local = archivo_subido is not None
         desfase_segundos = float(min_inicio * 60) if usar_tramo else 0.0
 
-        # Paso 1: Descargar fuente y comprimir a MP3 mono ligero (48kbps)
-        barra.progress(20, text="📥 Paso 1/3: Extrayendo audio comprimido del video...")
+        # Paso 1: Extraer audio ultraligero (16kHz / 24kbps mono)
+        barra.progress(20, text="📥 Paso 1/3: Extrayendo audio ultraligero...")
         audio_mp3_ligero = "audio_ligero.mp3"
 
         if es_archivo_local:
@@ -209,7 +210,7 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
                 f.write(archivo_subido.getbuffer())
             recorte_audio = ["-ss", str(min_inicio * 60), "-to", str(min_fin * 60)] if usar_tramo else []
             subprocess.run(
-                [ffmpeg_bin, "-y", *recorte_audio, "-i", ruta_video_local, "-vn", "-ac", "1", "-b:a", "48k", audio_mp3_ligero],
+                [ffmpeg_bin, "-y", *recorte_audio, "-i", ruta_video_local, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "24k", audio_mp3_ligero],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
             )
             fuente_clips = ruta_video_local
@@ -227,7 +228,7 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
                     info = ydl.extract_info(url, download=True)
                     archivo_descargado = ydl.prepare_filename(info)
                 subprocess.run(
-                    [ffmpeg_bin, "-y", "-i", archivo_descargado, "-vn", "-ac", "1", "-b:a", "48k", audio_mp3_ligero],
+                    [ffmpeg_bin, "-y", "-i", archivo_descargado, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "24k", audio_mp3_ligero],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
                 )
                 if os.path.exists(archivo_descargado):
@@ -243,7 +244,7 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
             st.error("⚠️ No se pudo extraer el audio de este tramo. Prueba con otro enlace o rango de minutos.")
             st.stop()
 
-        # Paso 2: Enviar audio directo en memoria (sin Files API)
+        # Paso 2: Enviar audio directo a Gemini
         barra.progress(55, text="🧠 Paso 2/3: Gemini está escuchando el audio y buscando momentos virales...")
         with open(audio_mp3_ligero, "rb") as f:
             bytes_audio = f.read()
@@ -285,7 +286,7 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
             st.error("⚠️ La IA no pudo extraer momentos claros en este fragmento. Prueba con otro tramo de minutos.")
             st.stop()
 
-        # Paso 3: Renderizar clips
+        # Paso 3: Renderizar clips en paralelo
         barra.progress(80, text="✂️ Paso 3/3: Renderizando tus clips con el encuadre elegido...")
         os.makedirs("clips_videos", exist_ok=True)
         tareas = [(i, clip, fuente_clips, es_archivo_local, "clips_videos", usar_fondo_borroso) for i, clip in enumerate(todos_los_clips)]
