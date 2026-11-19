@@ -18,6 +18,15 @@ ffmpeg_bin = os.path.join(carpeta_ffmpeg, "ffmpeg.exe") if carpeta_ffmpeg else "
 if carpeta_ffmpeg and carpeta_ffmpeg not in os.environ["PATH"]:
     os.environ["PATH"] = carpeta_ffmpeg + os.pathsep + os.environ["PATH"]
 
+# Crear archivo temporal de cookies si existen en Secrets
+RUTA_COOKIES = "cookies_temp.txt"
+if "YOUTUBE_COOKIES" in st.secrets and st.secrets["YOUTUBE_COOKIES"].strip():
+    with open(RUTA_COOKIES, "w", encoding="utf-8") as f:
+        f.write(st.secrets["YOUTUBE_COOKIES"].strip() + "\n")
+    tiene_cookies = True
+else:
+    tiene_cookies = False
+
 # --- BARRA LATERAL DIDÁCTICA ---
 with st.sidebar:
     st.header("💡 Guía Rápida")
@@ -41,7 +50,7 @@ st.caption("Extrae automáticamente los mejores momentos en formato vertical (9:
 
 col1, col2, col3 = st.columns(3)
 with col1:
-    st.info("**Paso 1: Elige tu fuente**\n\nSube un archivo MP4 directo o pega un enlace de Twitch/Kick/YouTube.")
+    st.info("**Paso 1: Elige tu fuente**\n\nPega un enlace de YouTube, Twitch o Kick, o sube un MP4.")
 with col2:
     st.info("**Paso 2: Elige el encuadre**\n\nSelecciona zoom centrado o pantalla completa con fondo borroso.")
 with col3:
@@ -51,24 +60,22 @@ st.divider()
 
 api_key = st.secrets["GEMINI_API_KEY"]
 
-# Pestañas para evitar bloqueos de YouTube en la nube
-tab_archivo, tab_enlace = st.tabs(["📁 Subir Video MP4 (Recomendado — Sin bloqueos)", "🔗 Pegar Enlace (Twitch / Kick / YouTube)"])
+tab_enlace, tab_archivo = st.tabs(["🔗 Pegar Enlace (YouTube / Twitch / Kick)", "📁 Subir Video MP4 Directo"])
 
-archivo_subido = None
 url = ""
-
-with tab_archivo:
-    archivo_subido = st.file_uploader(
-        "Sube tu video descargado en MP4 (hasta 200 MB):",
-        type=["mp4", "mov", "mkv"]
-    )
+archivo_subido = None
 
 with tab_enlace:
     url = st.text_input(
         "Pega aquí el enlace del video o directo:",
-        placeholder="Ejemplo: https://www.twitch.tv/videos/... o YouTube"
+        placeholder="Ejemplo: https://www.youtube.com/watch?v=..."
     )
-    st.caption("⚠️ Nota: YouTube suele bloquear descargas desde servidores gratuitos. Si falla, descarga el video y súbelo en la primera pestaña.")
+
+with tab_archivo:
+    archivo_subido = st.file_uploader(
+        "O sube tu video descargado en MP4 (hasta 200 MB):",
+        type=["mp4", "mov", "mkv"]
+    )
 
 formato_video = st.radio(
     "📐 Elige el estilo de encuadre vertical:",
@@ -86,6 +93,8 @@ OPCIONES_YTDLP_BASE = {
     'concurrent_fragment_downloads': 8,
     'quiet': True
 }
+if tiene_cookies:
+    OPCIONES_YTDLP_BASE['cookiefile'] = RUTA_COOKIES
 if carpeta_ffmpeg:
     OPCIONES_YTDLP_BASE['ffmpeg_location'] = carpeta_ffmpeg
 
@@ -155,7 +164,7 @@ def procesar_clip_tarea(datos):
 
 if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_width=True):
     if not archivo_subido and not url:
-        st.warning("⚠️ Por favor, sube un archivo MP4 o pega un enlace en las pestañas de arriba.")
+        st.warning("⚠️ Por favor, pega un enlace o sube un archivo MP4 en las pestañas de arriba.")
     else:
         limpiar_temporales()
         client = genai.Client(api_key=api_key)
@@ -186,9 +195,9 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
                     info = ydl.extract_info(url, download=True)
                     archivo_audio = ydl.prepare_filename(info)
                 fuente_clips = url
-            except Exception:
+            except Exception as e:
                 barra.empty()
-                st.error("⚠️ YouTube bloqueó la descarga automática desde este servidor. Descarga el video en MP4 y súbelo en la primera pestaña ('Subir Video MP4').")
+                st.error(f"⚠️ No se pudo descargar el enlace ({str(e)[:120]}). Si las cookies expiraron, renuévalas o usa la pestaña 'Subir Video MP4 Directo'.")
                 st.stop()
 
         # Paso 2: Transcribir
