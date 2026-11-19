@@ -241,7 +241,15 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
 
         # Paso 2: Subir audio directo a Gemini y analizar ganchos (0% RAM extra)
         barra.progress(55, text="🧠 Paso 2/3: Gemini está escuchando el audio y buscando momentos virales...")
-        archivo_gemini = client.files.upload(file=audio_mp3_ligero)
+        if not os.path.exists(audio_mp3_ligero) or os.path.getsize(audio_mp3_ligero) == 0:
+            barra.empty()
+            st.error("⚠️ No se pudo extraer el audio de este tramo. Prueba con otro enlace o rango de minutos.")
+            st.stop()
+
+        archivo_gemini = client.files.upload(
+            file=audio_mp3_ligero,
+            config={"mime_type": "audio/mp3"}
+        )
         while archivo_gemini.state.name == "PROCESSING":
             time.sleep(2)
             archivo_gemini = client.files.get(name=archivo_gemini.name)
