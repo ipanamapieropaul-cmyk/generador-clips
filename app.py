@@ -2,11 +2,11 @@ import streamlit as st
 import yt_dlp
 import json
 import os
-import time
 import glob
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from google import genai
+from google.genai import types
 
 # Configuración de página
 st.set_page_config(page_title="Cliperos AI — Generador Viral", page_icon="🎬", layout="wide")
@@ -40,7 +40,7 @@ with st.sidebar:
     st.divider()
     st.subheader("⏱️ Directos largos (Kick / Twitch)")
     st.info(
-        "En directos de **2 a 8 horas**, activa **'Analizar solo un tramo por minutos'** (ej. min 60 al 105) para sacar clips en menos de 1 minuto."
+        "En directos de **2 a 8 horas**, activa **'Analizar solo un tramo por minutos'** (ej. min 20 al 50) para sacar clips en menos de 1 minuto."
     )
     st.subheader("🎯 ¿Qué formato elegir?")
     st.info(
@@ -84,13 +84,13 @@ with tab_archivo:
 # Selector de tramo para directos largos
 usar_tramo = st.checkbox("⏱️ Analizar solo un tramo específico por minutos (Recomendado para directos de +1 hora)")
 min_inicio = 0
-min_fin = 45
+min_fin = 35
 if usar_tramo:
     col_t1, col_t2 = st.columns(2)
     with col_t1:
         min_inicio = st.number_input("Minuto de inicio:", min_value=0, max_value=1440, value=0, step=5)
     with col_t2:
-        min_fin = st.number_input("Minuto de fin:", min_value=1, max_value=1440, value=45, step=5)
+        min_fin = st.number_input("Minuto de fin:", min_value=1, max_value=1440, value=35, step=5)
 
 formato_video = st.radio(
     "📐 Elige el estilo de encuadre vertical:",
@@ -199,7 +199,7 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
         es_archivo_local = archivo_subido is not None
         desfase_segundos = float(min_inicio * 60) if usar_tramo else 0.0
 
-        # Paso 1: Descargar fuente y comprimir a MP3 mono ligero (64kbps)
+        # Paso 1: Descargar fuente y comprimir a MP3 mono ligero (48kbps)
         barra.progress(20, text="📥 Paso 1/3: Extrayendo audio comprimido del video...")
         audio_mp3_ligero = "audio_ligero.mp3"
 
@@ -226,7 +226,6 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=True)
                     archivo_descargado = ydl.prepare_filename(info)
-                # Convertir a MP3 ligero (48kbps mono) y borrar el archivo descargado pesado para liberar espacio
                 subprocess.run(
                     [ffmpeg_bin, "-y", "-i", archivo_descargado, "-vn", "-ac", "1", "-b:a", "48k", audio_mp3_ligero],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
@@ -239,20 +238,15 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
                 st.error(f"⚠️ No se pudo descargar el enlace ({str(e)[:140]}). Si es un stream largo, activa la casilla de tramo por minutos.")
                 st.stop()
 
-        # Paso 2: Subir audio directo a Gemini y analizar ganchos (0% RAM extra)
-        barra.progress(55, text="🧠 Paso 2/3: Gemini está escuchando el audio y buscando momentos virales...")
         if not os.path.exists(audio_mp3_ligero) or os.path.getsize(audio_mp3_ligero) == 0:
             barra.empty()
             st.error("⚠️ No se pudo extraer el audio de este tramo. Prueba con otro enlace o rango de minutos.")
             st.stop()
 
-        archivo_gemini = client.files.upload(
-            file=audio_mp3_ligero,
-            config={"mime_type": "audio/mp3"}
-        )
-        while archivo_gemini.state.name == "PROCESSING":
-            time.sleep(2)
-            archivo_gemini = client.files.get(name=archivo_gemini.name)
+        # Paso 2: Enviar audio directo en memoria (sin Files API)
+        barra.progress(55, text="🧠 Paso 2/3: Gemini está escuchando el audio y buscando momentos virales...")
+        with open(audio_mp3_ligero, "rb") as f:
+            bytes_audio = f.read()
 
         prompt = """
         Eres un editor experto en retención viral para TikTok y Shorts. Escucha este audio completo con atención
@@ -266,19 +260,22 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
           {"titulo": "Gancho atractivo", "inicio": 120.5, "fin": 165.0, "puntaje": 95, "razon": "Por qué retiene audiencia"}
         ]
         """
-        respuesta = client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=[archivo_gemini, prompt]
-        )
         try:
-            client.files.delete(name=archivo_gemini.name)
-        except:
-            pass
+            respuesta = client.models.generate_content(
+                model="gemini-3.8-flash",
+                contents=[
+                    types.Part.from_bytes(data=bytes_audio, mime_type="audio/mpeg"),
+                    prompt
+                ]
+            )
+        except Exception as e:
+            barra.empty()
+            st.error(f"❌ Error de API de Gemini: {e}")
+            st.stop()
 
         texto_json = respuesta.text.replace("```json", "").replace("```", "").strip()
         try:
             todos_los_clips = json.loads(texto_json)
-            # Ajustar tiempos al directo original si se usó tramo por minutos
             for c in todos_los_clips:
                 c['inicio'] = float(c['inicio']) + desfase_segundos
                 c['fin'] = float(c['fin']) + desfase_segundos
