@@ -87,7 +87,6 @@ formato_video = st.radio(
 )
 
 OPCIONES_YTDLP_BASE = {
-    'extractor_args': {'youtube': {'player_client': ['android', 'ios', 'web']}},
     'nocheckcertificate': True,
     'geo_bypass': True,
     'concurrent_fragment_downloads': 8,
@@ -150,7 +149,7 @@ def procesar_clip_tarea(datos):
         temp_fragmento = f"fragmento_{i}.mp4"
         ydl_clip_opts = {
             **OPCIONES_YTDLP_BASE,
-            'format': 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best',
+            'format': 'best[height<=1080][ext=mp4]/best[height<=1080]/best',
             'outtmpl': temp_fragmento,
             'download_ranges': yt_dlp.utils.download_range_func(None, [(inicio, fin)]),
         }
@@ -187,7 +186,7 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
         else:
             ydl_opts = {
                 **OPCIONES_YTDLP_BASE,
-                'format': 'worstaudio/bestaudio',
+                'format': 'bestaudio/best',
                 'outtmpl': 'audio_temp.%(ext)s',
             }
             try:
@@ -197,7 +196,7 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
                 fuente_clips = url
             except Exception as e:
                 barra.empty()
-                st.error(f"⚠️ No se pudo descargar el enlace ({str(e)[:120]}). Si las cookies expiraron, renuévalas o usa la pestaña 'Subir Video MP4 Directo'.")
+                st.error(f"⚠️ No se pudo descargar el enlace ({str(e)[:140]}). Si las cookies expiraron, renuévalas o usa la pestaña 'Subir Video MP4 Directo'.")
                 st.stop()
 
         # Paso 2: Transcribir
