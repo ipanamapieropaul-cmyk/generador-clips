@@ -12,6 +12,16 @@ from google.genai import types
 # Configuración de página
 st.set_page_config(page_title="Cliperos AI — Generador Viral", page_icon="🎬", layout="wide")
 
+# Detectar si hay GPU NVIDIA disponible (Google Colab / PC local)
+def detectar_gpu():
+    try:
+        res = subprocess.run(["nvidia-smi"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return res.returncode == 0
+    except Exception:
+        return False
+
+TIENE_GPU = detectar_gpu()
+
 # Buscar FFmpeg (Windows local o Linux en la nube)
 rutas_winget = glob.glob(os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Packages\*FFmpeg*\**\bin"), recursive=True)
 carpeta_ffmpeg = rutas_winget[0] if rutas_winget else None
@@ -28,25 +38,35 @@ if "YOUTUBE_COOKIES" in st.secrets and st.secrets["YOUTUBE_COOKIES"].strip():
 else:
     tiene_cookies = False
 
+# Cargar Whisper solo si hay GPU disponible (para no gastar RAM en Streamlit Cloud)
+@st.cache_resource
+def cargar_modelo_whisper_gpu():
+    from faster_whisper import WhisperModel
+    return WhisperModel("base", device="cuda", compute_type="float16")
+
 # --- BARRA LATERAL DIDÁCTICA ---
 with st.sidebar:
     st.header("💡 Guía Rápida")
+    if TIENE_GPU:
+        st.success("⚡ Modo Turbo GPU Activo (Whisper CUDA + NVENC)")
+    else:
+        st.info("☁️ Modo Nube Ligero Activo (Audio Directo)")
     st.markdown("""
     **¿Cómo funciona esta herramienta?**
     1. **Extrae una pista de audio ultraligera** del video o tramo.
-    2. **La IA escucha el audio directamente** en la nube.
+    2. **Analiza el contenido en segundos** con IA.
     3. **Detecta los momentos más virales** con tiempos exactos.
     4. **Renderiza en vertical (9:16)** listo para TikTok o Reels.
     """)
     st.divider()
     st.subheader("⏱️ Directos largos (Kick / Twitch)")
     st.info(
-        "En directos de **2 a 8 horas**, activa **'Analizar solo un tramo por minutos'** (ej. min 20 al 50) para sacar clips en menos de 1 minuto."
+        "En directos de **2 a 8 horas**, activa **'Analizar solo un tramo por minutos'** (ej. min 20 al 50) para sacar clips en segundos."
     )
     st.subheader("🎯 ¿Qué formato elegir?")
     st.info(
-        "**• Zoom centrado (9:16):** Ideal para podcasts, charlas o reacciones (el más rápido).\n\n"
-        "**• Fondo borroso:** Ideal para gameplays, fútbol o streams completos."
+        "**• Zoom centrado (9:16):** Ideal para podcasts, charlas o reacciones.\n\n"
+        "**• Fondo negro:** Ideal para gameplays, fútbol o streams completos (muy rápido y limpio)."
     )
 
 # --- CABECERA VISUAL ---
@@ -57,7 +77,7 @@ col1, col2, col3 = st.columns(3)
 with col1:
     st.info("**Paso 1: Elige tu fuente**\n\nPega un enlace de Kick, Twitch o YouTube, o sube un MP4.")
 with col2:
-    st.info("**Paso 2: Encuadre y tramo**\n\nElige zoom o fondo borroso (y filtra minutos si es un stream largo).")
+    st.info("**Paso 2: Encuadre y tramo**\n\nElige zoom o fondo negro (y filtra minutos si es un stream largo).")
 with col3:
     st.info("**Paso 3: Descarga y sube**\n\nRevisa el puntaje viral de cada clip y descárgalo en MP4.")
 
@@ -96,7 +116,7 @@ formato_video = st.radio(
     "📐 Elige el estilo de encuadre vertical:",
     options=[
         "Zoom centrado (9:16 — Ideal para podcasts y charlas)",
-        "Fondo borroso (Pantalla completa — Ideal para gameplays y streams)"
+        "Fondo negro (Pantalla completa — Ideal para gameplays y streams)"
     ],
     horizontal=True
 )
@@ -127,14 +147,9 @@ def formatear_tiempo(segundos_totales):
     m, seg = divmod(resto, 60)
     return f"{h:02d}:{m:02d}:{seg:02d}" if h > 0 else f"{m:02d}:{seg:02d}"
 
-def renderizar_clip_ffmpeg(entrada_mp4, ruta_final, usar_fondo_borroso, inicio=None, fin=None):
-    if usar_fondo_borroso:
-        filtro_ffmpeg = [
-            "-filter_complex",
-            "[0:v]scale=180:320:force_original_aspect_ratio=increase,crop=180:320,boxblur=8:2,scale=720:1280[bg];"
-            "[0:v]scale=720:-2[fg];"
-            "[bg][fg]overlay=(W-w)/2:(H-h)/2"
-        ]
+def renderizar_clip_ffmpeg(entrada_mp4, ruta_final, usar_fondo_negro, inicio=None, fin=None):
+    if usar_fondo_negro:
+        filtro_ffmpeg = ["-vf", "scale=720:-2,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black"]
     else:
         filtro_ffmpeg = ["-vf", "crop=ih*(9/16):ih:(iw-ih*(9/16))/2:0,scale=720:1280"]
 
@@ -160,13 +175,13 @@ def renderizar_clip_ffmpeg(entrada_mp4, ruta_final, usar_fondo_borroso, inicio=N
         subprocess.run(comando_cpu, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 def procesar_clip_tarea(datos):
-    i, clip, fuente, es_archivo_local, folder_clips, usar_fondo_borroso = datos
+    i, clip, fuente, es_archivo_local, folder_clips, usar_fondo_negro = datos
     inicio = float(clip['inicio'])
     fin = float(clip['fin'])
     ruta_final = os.path.join(folder_clips, f"clip_viral_{i+1}.mp4")
 
     if es_archivo_local:
-        renderizar_clip_ffmpeg(fuente, ruta_final, usar_fondo_borroso, inicio, fin)
+        renderizar_clip_ffmpeg(fuente, ruta_final, usar_fondo_negro, inicio, fin)
         return (i, clip, ruta_final)
     else:
         temp_fragmento = f"fragmento_{i}.mp4"
@@ -180,7 +195,7 @@ def procesar_clip_tarea(datos):
             ydl.download([fuente])
 
         if os.path.exists(temp_fragmento):
-            renderizar_clip_ffmpeg(temp_fragmento, ruta_final, usar_fondo_borroso)
+            renderizar_clip_ffmpeg(temp_fragmento, ruta_final, usar_fondo_negro)
             try:
                 os.remove(temp_fragmento)
             except:
@@ -197,7 +212,7 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
         limpiar_temporales()
         client = genai.Client(api_key=api_key)
         barra = st.progress(0, text="Iniciando proceso...")
-        usar_fondo_borroso = "Fondo borroso" in formato_video
+        usar_fondo_negro = "Fondo negro" in formato_video
         es_archivo_local = archivo_subido is not None
         desfase_segundos = float(min_inicio * 60) if usar_tramo else 0.0
 
@@ -255,23 +270,57 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
             st.error("⚠️ El audio extraído quedó vacío. Verifica que el rango de minutos esté dentro de la duración real del directo.")
             st.stop()
 
-        # Paso 2: Enviar audio a Gemini con respaldo automático ante saturación (503/429)
-        barra.progress(55, text="🧠 Paso 2/3: Gemini está escuchando el audio y buscando momentos virales...")
-        with open(audio_mp3_ligero, "rb") as f:
-            bytes_audio = f.read()
+        # Paso 2: Si hay GPU, transcribir en GPU (3 seg) y mandar solo texto a Gemini; si no, mandar audio directo
+        usar_modo_texto_gpu = False
+        transcripcion_texto = ""
 
-        prompt = """
-        Eres un editor experto en retención viral para TikTok y Shorts. Escucha este audio completo con atención
-        y detecta los 4 MEJORES momentos virales (ganchos fuertes, risas, historias completas, polémica o jugadas épicas).
-        Reglas estrictas:
-        - Cada clip debe durar entre 25 y 60 segundos (fin - inicio).
-        - Devuelve 'inicio' y 'fin' en SEGUNDOS exactos desde el comienzo de este archivo de audio (ejemplo: 145.0).
-        
-        Responde ÚNICAMENTE con un JSON válido (sin texto extra):
-        [
-          {"titulo": "Gancho atractivo", "inicio": 120.5, "fin": 165.0, "puntaje": 95, "razon": "Por qué retiene audiencia"}
-        ]
-        """
+        if TIENE_GPU:
+            try:
+                barra.progress(45, text="⚡ Paso 2/3: Transcribiendo en GPU T4 a máxima velocidad...")
+                modelo_w = cargar_modelo_whisper_gpu()
+                segmentos, _ = modelo_w.transcribe(audio_mp3_ligero, beam_size=1, vad_filter=True)
+                lineas = [f"[{s.start:.1f}s - {s.end:.1f}s] {s.text.strip()}" for s in segmentos]
+                transcripcion_texto = "\n".join(lineas)
+                if len(transcripcion_texto.strip()) > 30:
+                    usar_modo_texto_gpu = True
+            except Exception:
+                usar_modo_texto_gpu = False
+
+        if usar_modo_texto_gpu:
+            barra.progress(65, text="🧠 Paso 2/3: Gemini analizando texto (respuesta en 2 seg)...")
+            prompt_texto = f"""
+            Eres un editor experto en retención viral para TikTok y Shorts. Lee esta transcripción con marcas de tiempo
+            y detecta los 4 MEJORES momentos virales (ganchos fuertes, risas, historias completas, polémica o jugadas épicas).
+            Reglas estrictas:
+            - Cada clip debe durar entre 25 y 60 segundos (fin - inicio).
+            - Devuelve 'inicio' y 'fin' en SEGUNDOS exactos usando las marcas de tiempo del texto.
+            
+            Responde ÚNICAMENTE con un JSON válido (sin texto extra):
+            [
+              {{"titulo": "Gancho atractivo", "inicio": 120.5, "fin": 165.0, "puntaje": 95, "razon": "Por qué retiene audiencia"}}
+            ]
+
+            TRANSCRIPCIÓN:
+            {transcripcion_texto}
+            """
+            contenido_ia = [prompt_texto]
+        else:
+            barra.progress(55, text="🧠 Paso 2/3: Gemini escuchando el audio y buscando momentos virales...")
+            with open(audio_mp3_ligero, "rb") as f:
+                bytes_audio = f.read()
+            prompt_audio = """
+            Eres un editor experto en retención viral para TikTok y Shorts. Escucha este audio completo con atención
+            y detecta los 4 MEJORES momentos virales (ganchos fuertes, risas, historias completas, polémica o jugadas épicas).
+            Reglas estrictas:
+            - Cada clip debe durar entre 25 y 60 segundos (fin - inicio).
+            - Devuelve 'inicio' y 'fin' en SEGUNDOS exactos desde el comienzo de este archivo de audio (ejemplo: 145.0).
+            
+            Responde ÚNICAMENTE con un JSON válido (sin texto extra):
+            [
+              {"titulo": "Gancho atractivo", "inicio": 120.5, "fin": 165.0, "puntaje": 95, "razon": "Por qué retiene audiencia"}
+            ]
+            """
+            contenido_ia = [types.Part.from_bytes(data=bytes_audio, mime_type="audio/mpeg"), prompt_audio]
 
         modelos_respaldo = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite"]
         respuesta = None
@@ -282,16 +331,13 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
                 try:
                     respuesta = client.models.generate_content(
                         model=modelo_actual,
-                        contents=[
-                            types.Part.from_bytes(data=bytes_audio, mime_type="audio/mpeg"),
-                            prompt
-                        ]
+                        contents=contenido_ia
                     )
                     break
                 except Exception as e:
                     ultimo_error = str(e)
                     if "503" in ultimo_error or "429" in ultimo_error or "UNAVAILABLE" in ultimo_error:
-                        time.sleep(3)
+                        time.sleep(2)
                         continue
                     else:
                         break
@@ -318,7 +364,7 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
         # Paso 3: Renderizar clips en paralelo
         barra.progress(80, text="✂️ Paso 3/3: Renderizando tus clips con el encuadre elegido...")
         os.makedirs("clips_videos", exist_ok=True)
-        tareas = [(i, clip, fuente_clips, es_archivo_local, "clips_videos", usar_fondo_borroso) for i, clip in enumerate(todos_los_clips)]
+        tareas = [(i, clip, fuente_clips, es_archivo_local, "clips_videos", usar_fondo_negro) for i, clip in enumerate(todos_los_clips)]
         
         with ThreadPoolExecutor(max_workers=2) as executor:
             resultados = list(executor.map(procesar_clip_tarea, tareas))
