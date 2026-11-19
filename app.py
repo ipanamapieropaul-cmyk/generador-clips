@@ -38,11 +38,11 @@ if "YOUTUBE_COOKIES" in st.secrets and st.secrets["YOUTUBE_COOKIES"].strip():
 else:
     tiene_cookies = False
 
-# Cargar Whisper solo si hay GPU disponible (para no gastar RAM en Streamlit Cloud)
+# Cargar Whisper nativo de PyTorch solo si hay GPU disponible
 @st.cache_resource
 def cargar_modelo_whisper_gpu():
-    from faster_whisper import WhisperModel
-    return WhisperModel("base", device="cuda", compute_type="float16")
+    import whisper
+    return whisper.load_model("base", device="cuda")
 
 # --- BARRA LATERAL DIDÁCTICA ---
 with st.sidebar:
@@ -278,8 +278,8 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
             try:
                 barra.progress(45, text="⚡ Paso 2/3: Transcribiendo en GPU T4 a máxima velocidad...")
                 modelo_w = cargar_modelo_whisper_gpu()
-                segmentos, _ = modelo_w.transcribe(audio_mp3_ligero, beam_size=1, vad_filter=True)
-                lineas = [f"[{s.start:.1f}s - {s.end:.1f}s] {s.text.strip()}" for s in segmentos]
+                resultado_w = modelo_w.transcribe(audio_mp3_ligero, fp16=True)
+                lineas = [f"[{s['start']:.1f}s - {s['end']:.1f}s] {s['text'].strip()}" for s in resultado_w["segments"]]
                 transcripcion_texto = "\n".join(lineas)
                 if len(transcripcion_texto.strip()) > 30:
                     usar_modo_texto_gpu = True
