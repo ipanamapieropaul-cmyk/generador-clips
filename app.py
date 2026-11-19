@@ -2,11 +2,10 @@ import streamlit as st
 import yt_dlp
 import json
 import os
-import gc
+import time
 import glob
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
-from faster_whisper import WhisperModel
 from google import genai
 
 # Configuración de página
@@ -33,15 +32,15 @@ with st.sidebar:
     st.header("💡 Guía Rápida")
     st.markdown("""
     **¿Cómo funciona esta herramienta?**
-    1. **Analiza el audio** del video o tramo elegido.
-    2. **Transcribe cada palabra** con tiempos exactos.
-    3. **Detecta los momentos más virales** con IA.
-    4. **Renderiza en vertical (9:16)** listo para subir.
+    1. **Extrae una pista de audio ligera** del video o tramo elegido.
+    2. **La IA escucha el audio directamente** sin saturar el servidor.
+    3. **Detecta los momentos más virales** con tiempos exactos.
+    4. **Renderiza en vertical (9:16)** listo para TikTok o Reels.
     """)
     st.divider()
     st.subheader("⏱️ Directos largos (Kick / Twitch)")
     st.info(
-        "En directos de **2 a 8 horas**, activa **'Analizar solo un tramo por minutos'** (ej. min 60 al 120) para evitar llenar la memoria del servidor y obtener clips en 1 minuto."
+        "En directos de **2 a 8 horas**, activa **'Analizar solo un tramo por minutos'** (ej. min 60 al 105) para sacar clips en menos de 1 minuto."
     )
     st.subheader("🎯 ¿Qué formato elegir?")
     st.info(
@@ -73,7 +72,7 @@ archivo_subido = None
 with tab_enlace:
     url = st.text_input(
         "Pega aquí el enlace del video o directo:",
-        placeholder="Ejemplo: https://kick.com/... o https://www.twitch.tv/videos/..."
+        placeholder="Ejemplo: https://kick.com/... o https://www.youtube.com/watch?v=..."
     )
 
 with tab_archivo:
@@ -83,7 +82,7 @@ with tab_archivo:
     )
 
 # Selector de tramo para directos largos
-usar_tramo = st.checkbox("⏱️ Analizar solo un tramo específico por minutos (Obligatorio para directos de +1 hora en la web)")
+usar_tramo = st.checkbox("⏱️ Analizar solo un tramo específico por minutos (Recomendado para directos de +1 hora)")
 min_inicio = 0
 min_fin = 45
 if usar_tramo:
@@ -115,7 +114,7 @@ if carpeta_ffmpeg:
 
 def limpiar_temporales():
     for archivo in os.listdir():
-        if archivo.startswith(("audio_temp", "fragmento_", "video_local_temp")):
+        if archivo.startswith(("audio_temp", "audio_ligero", "fragmento_", "video_local_temp")):
             try:
                 os.remove(archivo)
             except:
@@ -200,16 +199,17 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
         es_archivo_local = archivo_subido is not None
         desfase_segundos = float(min_inicio * 60) if usar_tramo else 0.0
 
-        # Paso 1: Obtener pista ligera para transcribir (evita bajar 20 GB en Kick)
-        barra.progress(15, text="📥 Paso 1/4: Descargando pista ligera para analizar audio...")
+        # Paso 1: Descargar fuente y comprimir a MP3 mono ligero (64kbps)
+        barra.progress(20, text="📥 Paso 1/3: Extrayendo audio comprimido del video...")
+        audio_mp3_ligero = "audio_ligero.mp3"
+
         if es_archivo_local:
             ruta_video_local = "video_local_temp.mp4"
             with open(ruta_video_local, "wb") as f:
                 f.write(archivo_subido.getbuffer())
-            archivo_audio = "audio_temp.mp3"
             recorte_audio = ["-ss", str(min_inicio * 60), "-to", str(min_fin * 60)] if usar_tramo else []
             subprocess.run(
-                [ffmpeg_bin, "-y", *recorte_audio, "-i", ruta_video_local, "-vn", "-acodec", "libmp3lame", "-q:a", "4", archivo_audio],
+                [ffmpeg_bin, "-y", *recorte_audio, "-i", ruta_video_local, "-vn", "-ac", "1", "-b:a", "48k", audio_mp3_ligero],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
             )
             fuente_clips = ruta_video_local
@@ -225,66 +225,63 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=True)
-                    archivo_audio = ydl.prepare_filename(info)
+                    archivo_descargado = ydl.prepare_filename(info)
+                # Convertir a MP3 ligero (48kbps mono) y borrar el archivo descargado pesado para liberar espacio
+                subprocess.run(
+                    [ffmpeg_bin, "-y", "-i", archivo_descargado, "-vn", "-ac", "1", "-b:a", "48k", audio_mp3_ligero],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+                if os.path.exists(archivo_descargado):
+                    os.remove(archivo_descargado)
                 fuente_clips = url
             except Exception as e:
                 barra.empty()
-                st.error(f"⚠️ No se pudo descargar el enlace ({str(e)[:140]}). Si es un stream muy largo, activa la casilla de tramo por minutos.")
+                st.error(f"⚠️ No se pudo descargar el enlace ({str(e)[:140]}). Si es un stream largo, activa la casilla de tramo por minutos.")
                 st.stop()
 
-        # Paso 2: Transcribir y liberar RAM al terminar
-        barra.progress(40, text="🎙️ Paso 2/4: Transcribiendo voz a texto con IA...")
-        try:
-            model = WhisperModel("base", device="cuda", compute_type="float16")
-        except Exception:
-            model = WhisperModel("tiny", device="cpu", compute_type="int8")
+        # Paso 2: Subir audio directo a Gemini y analizar ganchos (0% RAM extra)
+        barra.progress(55, text="🧠 Paso 2/3: Gemini está escuchando el audio y buscando momentos virales...")
+        archivo_gemini = client.files.upload(file=audio_mp3_ligero)
+        while archivo_gemini.state.name == "PROCESSING":
+            time.sleep(2)
+            archivo_gemini = client.files.get(name=archivo_gemini.name)
 
-        segments, _ = model.transcribe(archivo_audio, beam_size=1, vad_filter=True)
-        lineas_transcripcion = [
-            f"[{(s.start + desfase_segundos):.1f}s - {(s.end + desfase_segundos):.1f}s]: {s.text}"
-            for s in segments
-        ]
-        del model
-        gc.collect()
-
-        # Paso 3: Analizar con Gemini
-        barra.progress(65, text="🧠 Paso 3/4: Detectando los mejores ganchos virales...")
-        texto_completo = "\n".join(lineas_transcripcion)
-        tamano_bloque = 30000
-        bloques = [texto_completo[i:i + tamano_bloque] for i in range(0, len(texto_completo), tamano_bloque)]
+        prompt = """
+        Eres un editor experto en retención viral para TikTok y Shorts. Escucha este audio completo con atención
+        y detecta los 4 MEJORES momentos virales (ganchos fuertes, risas, historias completas, polémica o jugadas épicas).
+        Reglas estrictas:
+        - Cada clip debe durar entre 25 y 60 segundos (fin - inicio).
+        - Devuelve 'inicio' y 'fin' en SEGUNDOS exactos desde el comienzo de este archivo de audio (ejemplo: 145.0).
         
-        todos_los_clips = []
-        for idx, bloque in enumerate(bloques):
-            prompt = f"""
-            Eres un editor experto en retención viral para TikTok. Analiza este fragmento de transcripción
-            (Parte {idx+1} de {len(bloques)}) con tiempos en segundos y extrae los 2 MEJORES clips virales.
-            Reglas:
-            - Cada clip debe durar entre 25 y 60 segundos (fin - inicio).
-            - Usa exactamente los tiempos en segundos que aparecen entre corchetes.
-            - Busca ganchos fuertes al inicio, historias completas, risas, polémica o datos clave.
-            
-            Responde ÚNICAMENTE con un JSON válido:
-            [
-              {{"titulo": "Gancho atractivo", "inicio": 120.5, "fin": 165.0, "puntaje": 94, "razon": "Por qué retiene audiencia"}}
-            ]
+        Responde ÚNICAMENTE con un JSON válido (sin texto extra):
+        [
+          {"titulo": "Gancho atractivo", "inicio": 120.5, "fin": 165.0, "puntaje": 95, "razon": "Por qué retiene audiencia"}
+        ]
+        """
+        respuesta = client.models.generate_content(
+            model="gemini-3.8-flash",
+            contents=[archivo_gemini, prompt]
+        )
+        try:
+            client.files.delete(name=archivo_gemini.name)
+        except:
+            pass
 
-            Transcripción:
-            {bloque}
-            """
-            respuesta = client.models.generate_content(
-                model="gemini-3.8-flash",
-                contents=prompt
-            )
-            texto_json = respuesta.text.replace("```json", "").replace("```", "").strip()
-            try:
-                todos_los_clips.extend(json.loads(texto_json))
-            except:
-                continue
+        texto_json = respuesta.text.replace("```json", "").replace("```", "").strip()
+        try:
+            todos_los_clips = json.loads(texto_json)
+            # Ajustar tiempos al directo original si se usó tramo por minutos
+            for c in todos_los_clips:
+                c['inicio'] = float(c['inicio']) + desfase_segundos
+                c['fin'] = float(c['fin']) + desfase_segundos
+            todos_los_clips = sorted(todos_los_clips, key=lambda x: x.get('puntaje', 0), reverse=True)[:4]
+        except Exception:
+            barra.empty()
+            st.error("⚠️ La IA no pudo extraer momentos claros en este fragmento. Prueba con otro tramo de minutos.")
+            st.stop()
 
-        todos_los_clips = sorted(todos_los_clips, key=lambda x: x.get('puntaje', 0), reverse=True)[:4]
-
-        # Paso 4: Renderizar clips (2 hilos para cuidar la RAM en la nube)
-        barra.progress(85, text="✂️ Paso 4/4: Renderizando tus clips con el encuadre elegido...")
+        # Paso 3: Renderizar clips
+        barra.progress(80, text="✂️ Paso 3/3: Renderizando tus clips con el encuadre elegido...")
         os.makedirs("clips_videos", exist_ok=True)
         tareas = [(i, clip, fuente_clips, es_archivo_local, "clips_videos", usar_fondo_borroso) for i, clip in enumerate(todos_los_clips)]
         
