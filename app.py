@@ -32,12 +32,16 @@ with st.sidebar:
     st.header("💡 Guía Rápida")
     st.markdown("""
     **¿Cómo funciona esta herramienta?**
-    1. **Analiza el audio** del video completo.
+    1. **Analiza el audio** del video o tramo elegido.
     2. **Transcribe cada palabra** con tiempos exactos.
     3. **Detecta los momentos más virales** con IA.
     4. **Renderiza en vertical (9:16)** listo para subir.
     """)
     st.divider()
+    st.subheader("⏱️ Directos largos (Kick / Twitch)")
+    st.info(
+        "Si pegas un directo de **2 a 8 horas**, activa la opción **'Analizar solo un tramo por minutos'** para procesar bloques de 45–60 minutos en menos de 2 minutos."
+    )
     st.subheader("🎯 ¿Qué formato elegir?")
     st.info(
         "**• Zoom centrado (9:16):** Ideal para podcasts, charlas o reacciones.\n\n"
@@ -52,7 +56,7 @@ col1, col2, col3 = st.columns(3)
 with col1:
     st.info("**Paso 1: Elige tu fuente**\n\nPega un enlace de YouTube, Twitch o Kick, o sube un MP4.")
 with col2:
-    st.info("**Paso 2: Elige el encuadre**\n\nSelecciona zoom centrado o pantalla completa con fondo borroso.")
+    st.info("**Paso 2: Encuadre y tramo**\n\nElige zoom o fondo borroso (y filtra minutos si es un directo largo).")
 with col3:
     st.info("**Paso 3: Descarga y sube**\n\nRevisa el puntaje viral de cada clip y descárgalo en MP4.")
 
@@ -68,7 +72,7 @@ archivo_subido = None
 with tab_enlace:
     url = st.text_input(
         "Pega aquí el enlace del video o directo:",
-        placeholder="Ejemplo: https://www.youtube.com/watch?v=..."
+        placeholder="Ejemplo: https://kick.com/... o https://www.youtube.com/watch?v=..."
     )
 
 with tab_archivo:
@@ -76,6 +80,17 @@ with tab_archivo:
         "O sube tu video descargado en MP4 (hasta 200 MB):",
         type=["mp4", "mov", "mkv"]
     )
+
+# Selector de tramo para directos largos
+usar_tramo = st.checkbox("⏱️ Analizar solo un tramo específico por minutos (Recomendado para directos de +1 hora)")
+min_inicio = 0
+min_fin = 60
+if usar_tramo:
+    col_t1, col_t2 = st.columns(2)
+    with col_t1:
+        min_inicio = st.number_input("Minuto de inicio:", min_value=0, max_value=1440, value=0, step=5)
+    with col_t2:
+        min_fin = st.number_input("Minuto de fin:", min_value=1, max_value=1440, value=60, step=5)
 
 formato_video = st.radio(
     "📐 Elige el estilo de encuadre vertical:",
@@ -104,6 +119,12 @@ def limpiar_temporales():
                 os.remove(archivo)
             except:
                 pass
+
+def formatear_tiempo(segundos_totales):
+    s = int(segundos_totales)
+    h, resto = divmod(s, 3600)
+    m, seg = divmod(resto, 60)
+    return f"{h:02d}:{m:02d}:{seg:02d}" if h > 0 else f"{m:02d}:{seg:02d}"
 
 def renderizar_clip_ffmpeg(entrada_mp4, ruta_final, usar_fondo_borroso, inicio=None, fin=None):
     if usar_fondo_borroso:
@@ -164,22 +185,26 @@ def procesar_clip_tarea(datos):
 if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_width=True):
     if not archivo_subido and not url:
         st.warning("⚠️ Por favor, pega un enlace o sube un archivo MP4 en las pestañas de arriba.")
+    elif usar_tramo and min_fin <= min_inicio:
+        st.warning("⚠️ El minuto de fin debe ser mayor que el minuto de inicio.")
     else:
         limpiar_temporales()
         client = genai.Client(api_key=api_key)
         barra = st.progress(0, text="Iniciando proceso...")
         usar_fondo_borroso = "Fondo borroso" in formato_video
         es_archivo_local = archivo_subido is not None
+        desfase_segundos = float(min_inicio * 60) if usar_tramo else 0.0
 
-        # Paso 1: Obtener audio
-        barra.progress(15, text="📥 Paso 1/4: Preparando pista de audio...")
+        # Paso 1: Obtener audio (completo o solo el tramo elegido)
+        barra.progress(15, text="📥 Paso 1/4: Descargando y preparando pista de audio...")
         if es_archivo_local:
             ruta_video_local = "video_local_temp.mp4"
             with open(ruta_video_local, "wb") as f:
                 f.write(archivo_subido.getbuffer())
             archivo_audio = "audio_temp.mp3"
+            recorte_audio = ["-ss", str(min_inicio * 60), "-to", str(min_fin * 60)] if usar_tramo else []
             subprocess.run(
-                [ffmpeg_bin, "-y", "-i", ruta_video_local, "-vn", "-acodec", "libmp3lame", "-q:a", "4", archivo_audio],
+                [ffmpeg_bin, "-y", *recorte_audio, "-i", ruta_video_local, "-vn", "-acodec", "libmp3lame", "-q:a", "4", archivo_audio],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
             )
             fuente_clips = ruta_video_local
@@ -189,6 +214,9 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
                 'format': 'bestaudio/best',
                 'outtmpl': 'audio_temp.%(ext)s',
             }
+            if usar_tramo:
+                ydl_opts['download_ranges'] = yt_dlp.utils.download_range_func(None, [(min_inicio * 60, min_fin * 60)])
+
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=True)
@@ -207,7 +235,11 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
             model = WhisperModel("tiny", device="cpu", compute_type="int8")
 
         segments, _ = model.transcribe(archivo_audio, beam_size=1, vad_filter=True)
-        lineas_transcripcion = [f"[{s.start:.1f}s - {s.end:.1f}s]: {s.text}" for s in segments]
+        # Sumamos el desfase_segundos para conservar el tiempo real dentro del directo original
+        lineas_transcripcion = [
+            f"[{(s.start + desfase_segundos):.1f}s - {(s.end + desfase_segundos):.1f}s]: {s.text}"
+            for s in segments
+        ]
 
         # Paso 3: Analizar con Gemini
         barra.progress(65, text="🧠 Paso 3/4: Detectando los mejores ganchos virales...")
@@ -222,11 +254,12 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
             (Parte {idx+1} de {len(bloques)}) con tiempos en segundos y extrae los 2 MEJORES clips virales.
             Reglas:
             - Cada clip debe durar entre 25 y 60 segundos (fin - inicio).
+            - Usa exactamente los tiempos en segundos que aparecen entre corchetes.
             - Busca ganchos fuertes al inicio, historias completas, risas, polémica o datos clave.
             
             Responde ÚNICAMENTE con un JSON válido:
             [
-              {{"titulo": "Gancho atractivo", "inicio": 10.5, "fin": 45.0, "puntaje": 94, "razon": "Por qué retiene audiencia"}}
+              {{"titulo": "Gancho atractivo", "inicio": 120.5, "fin": 165.0, "puntaje": 94, "razon": "Por qué retiene audiencia"}}
             ]
 
             Transcripción:
@@ -266,7 +299,7 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
                     st.subheader(f"🔥 Clip #{i+1}: {clip['titulo']}")
                     st.metric(label="Potencial Viral estimado", value=f"{clip['puntaje']} / 100")
                     st.write(f"**¿Por qué retiene audiencia?** {clip['razon']}")
-                    st.caption(f"⏱️ Fragmento original: segundo {clip['inicio']}s al {clip['fin']}s")
+                    st.caption(f"⏱️ Marca en el directo: {formatear_tiempo(clip['inicio'])} al {formatear_tiempo(clip['fin'])}")
                     
                     with open(ruta_final, "rb") as file_vid:
                         st.download_button(
