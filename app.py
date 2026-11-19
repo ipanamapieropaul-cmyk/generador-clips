@@ -105,7 +105,8 @@ OPCIONES_YTDLP_BASE = {
     'nocheckcertificate': True,
     'geo_bypass': True,
     'concurrent_fragment_downloads': 8,
-    'quiet': True
+    'quiet': True,
+    'no_warnings': True
 }
 if tiene_cookies:
     OPCIONES_YTDLP_BASE['cookiefile'] = RUTA_COOKIES
@@ -184,41 +185,4 @@ def procesar_clip_tarea(datos):
                 os.remove(temp_fragmento)
             except:
                 pass
-            return (i, clip, ruta_final)
-    return None
-
-if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_width=True):
-    if not archivo_subido and not url:
-        st.warning("⚠️ Por favor, pega un enlace o sube un archivo MP4 en las pestañas de arriba.")
-    elif usar_tramo and min_fin <= min_inicio:
-        st.warning("⚠️ El minuto de fin debe ser mayor que el minuto de inicio.")
-    else:
-        limpiar_temporales()
-        client = genai.Client(api_key=api_key)
-        barra = st.progress(0, text="Iniciando proceso...")
-        usar_fondo_borroso = "Fondo borroso" in formato_video
-        es_archivo_local = archivo_subido is not None
-        desfase_segundos = float(min_inicio * 60) if usar_tramo else 0.0
-
-        # Paso 1: Extraer audio ultraligero (16kHz / 24kbps mono)
-        barra.progress(20, text="📥 Paso 1/3: Extrayendo audio ultraligero...")
-        audio_mp3_ligero = "audio_ligero.mp3"
-
-        if es_archivo_local:
-            ruta_video_local = "video_local_temp.mp4"
-            with open(ruta_video_local, "wb") as f:
-                f.write(archivo_subido.getbuffer())
-            recorte_audio = ["-ss", str(min_inicio * 60), "-to", str(min_fin * 60)] if usar_tramo else []
-            subprocess.run(
-                [ffmpeg_bin, "-y", *recorte_audio, "-i", ruta_video_local, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "24k", audio_mp3_ligero],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            )
-            fuente_clips = ruta_video_local
-        else:
-            ydl_opts = {
-                **OPCIONES_YTDLP_BASE,
-                'format': 'worstaudio/worst[ext=mp4]/worst',
-                'outtmpl': 'audio_temp.%(ext)s',
-            }
-            if usar_tramo:
-                ydl_opts['download_ranges'] = yt_dlp.utils.download_
+            return (i, clip
