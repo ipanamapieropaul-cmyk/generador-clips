@@ -2,6 +2,7 @@ import streamlit as st
 import yt_dlp
 import json
 import os
+import time
 import glob
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -127,7 +128,6 @@ def formatear_tiempo(segundos_totales):
 
 def renderizar_clip_ffmpeg(entrada_mp4, ruta_final, usar_fondo_borroso, inicio=None, fin=None):
     if usar_fondo_borroso:
-        # Desenfoque en baja resolución y escalado rápido a 720x1280 (3x más rápido en CPU)
         filtro_ffmpeg = [
             "-filter_complex",
             "[0:v]scale=180:320:force_original_aspect_ratio=increase,crop=180:320,boxblur=8:2,scale=720:1280[bg];"
@@ -221,102 +221,4 @@ if st.button("🚀 Generar Clips Virales Ahora", type="primary", use_container_w
                 'outtmpl': 'audio_temp.%(ext)s',
             }
             if usar_tramo:
-                ydl_opts['download_ranges'] = yt_dlp.utils.download_range_func(None, [(min_inicio * 60, min_fin * 60)])
-
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-                    archivo_descargado = ydl.prepare_filename(info)
-                subprocess.run(
-                    [ffmpeg_bin, "-y", "-i", archivo_descargado, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "24k", audio_mp3_ligero],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                )
-                if os.path.exists(archivo_descargado):
-                    os.remove(archivo_descargado)
-                fuente_clips = url
-            except Exception as e:
-                barra.empty()
-                st.error(f"⚠️ No se pudo descargar el enlace ({str(e)[:140]}). Si es un stream largo, activa la casilla de tramo por minutos.")
-                st.stop()
-
-        if not os.path.exists(audio_mp3_ligero) or os.path.getsize(audio_mp3_ligero) == 0:
-            barra.empty()
-            st.error("⚠️ No se pudo extraer el audio de este tramo. Prueba con otro enlace o rango de minutos.")
-            st.stop()
-
-        # Paso 2: Enviar audio directo a Gemini
-        barra.progress(55, text="🧠 Paso 2/3: Gemini está escuchando el audio y buscando momentos virales...")
-        with open(audio_mp3_ligero, "rb") as f:
-            bytes_audio = f.read()
-
-        prompt = """
-        Eres un editor experto en retención viral para TikTok y Shorts. Escucha este audio completo con atención
-        y detecta los 4 MEJORES momentos virales (ganchos fuertes, risas, historias completas, polémica o jugadas épicas).
-        Reglas estrictas:
-        - Cada clip debe durar entre 25 y 60 segundos (fin - inicio).
-        - Devuelve 'inicio' y 'fin' en SEGUNDOS exactos desde el comienzo de este archivo de audio (ejemplo: 145.0).
-        
-        Responde ÚNICAMENTE con un JSON válido (sin texto extra):
-        [
-          {"titulo": "Gancho atractivo", "inicio": 120.5, "fin": 165.0, "puntaje": 95, "razon": "Por qué retiene audiencia"}
-        ]
-        """
-        try:
-            respuesta = client.models.generate_content(
-                model="gemini-3.8-flash",
-                contents=[
-                    types.Part.from_bytes(data=bytes_audio, mime_type="audio/mpeg"),
-                    prompt
-                ]
-            )
-        except Exception as e:
-            barra.empty()
-            st.error(f"❌ Error de API de Gemini: {e}")
-            st.stop()
-
-        texto_json = respuesta.text.replace("```json", "").replace("```", "").strip()
-        try:
-            todos_los_clips = json.loads(texto_json)
-            for c in todos_los_clips:
-                c['inicio'] = float(c['inicio']) + desfase_segundos
-                c['fin'] = float(c['fin']) + desfase_segundos
-            todos_los_clips = sorted(todos_los_clips, key=lambda x: x.get('puntaje', 0), reverse=True)[:4]
-        except Exception:
-            barra.empty()
-            st.error("⚠️ La IA no pudo extraer momentos claros en este fragmento. Prueba con otro tramo de minutos.")
-            st.stop()
-
-        # Paso 3: Renderizar clips en paralelo
-        barra.progress(80, text="✂️ Paso 3/3: Renderizando tus clips con el encuadre elegido...")
-        os.makedirs("clips_videos", exist_ok=True)
-        tareas = [(i, clip, fuente_clips, es_archivo_local, "clips_videos", usar_fondo_borroso) for i, clip in enumerate(todos_los_clips)]
-        
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            resultados = list(executor.map(procesar_clip_tarea, tareas))
-
-        barra.progress(100, text="✅ ¡Proceso completado!")
-        st.balloons()
-
-        for res in resultados:
-            if res:
-                i, clip, ruta_final = res
-                st.divider()
-                col_vid, col_info = st.columns([1, 1.5])
-                with col_vid:
-                    st.video(ruta_final)
-                with col_info:
-                    st.subheader(f"🔥 Clip #{i+1}: {clip['titulo']}")
-                    st.metric(label="Potencial Viral estimado", value=f"{clip['puntaje']} / 100")
-                    st.write(f"**¿Por qué retiene audiencia?** {clip['razon']}")
-                    st.caption(f"⏱️ Marca en el directo: {formatear_tiempo(clip['inicio'])} al {formatear_tiempo(clip['fin'])}")
-                    
-                    with open(ruta_final, "rb") as file_vid:
-                        st.download_button(
-                            label=f"⬇️ Descargar Clip #{i+1} (MP4)",
-                            data=file_vid,
-                            file_name=f"clip_viral_{i+1}.mp4",
-                            mime="video/mp4",
-                            use_container_width=True
-                        )
-
-        limpiar_temporales()
+                ydl_opts['download_ranges'] = yt_dlp.utils.download_
